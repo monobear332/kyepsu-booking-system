@@ -34,8 +34,8 @@ interface SelectedSlotItem {
 
 interface AvailableSlotRow {
   label: string
-  court1Status: 'available' | 'reserved'
-  court2Status: 'available' | 'reserved'
+  court1Status: 'available' | 'reserved' | 'past'
+  court2Status: 'available' | 'reserved' | 'past'
 }
 
 // ─────────────────────────────────────────────
@@ -88,7 +88,7 @@ function ReadOnlyCalendar({
           editable={false}
           selectable={false}
           events={events}
-          timeZone="UTC"
+          timeZone="Asia/Manila"
           height="auto"
           expandRows={true}
           slotLabelFormat={{
@@ -114,6 +114,13 @@ const generateSlots = () => {
   return slots
 }
 
+const getManilaNow = () => {
+  const manilaString = new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila' })
+  return new Date(manilaString)
+}
+
+
+
 const calculateSlotPrice = (slotLabel: string) => {
   const startPart = slotLabel.split(' - ')[0]
   const [time, modifier] = startPart.split(' ')
@@ -121,7 +128,7 @@ const calculateSlotPrice = (slotLabel: string) => {
   let hour24 = parseInt(hours, 10)
   if (hour24 === 12) hour24 = 0
   if (modifier === 'PM') hour24 += 12
-  return hour24 >= 16 ? 220 : 150
+  return hour24 >= 16 ? 220 : 120
 }
 
 const parseSlotToIsoStrings = (selectedDate: string, slotLabel: string) => {
@@ -140,7 +147,7 @@ const parseSlotToIsoStrings = (selectedDate: string, slotLabel: string) => {
 }
 
 const getTodayDateString = () => {
-  const today = new Date()
+  const today = getManilaNow()
   return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`
 }
 
@@ -274,35 +281,43 @@ export default function HomePage() {
   }
 
   const loadAvailableSlots = async () => {
-    const allSlots = generateSlots()
-    const startOfDay = `${selectedDate}T00:00:00`
-    const endOfDay = `${selectedDate}T23:59:59`
-    const { data: existingBookings, error } = await supabase
-      .from('bookings').select('court, start_time, end_time')
-      .in('court', ['1', '2']).in('status', ['pending', 'confirmed', 'reserved'])
-      .gte('start_time', startOfDay).lte('end_time', endOfDay)
-    if (error) { console.error('Error fetching slots:', error); return }
+  const allSlots = generateSlots()
+  const startOfDay = `${selectedDate}T00:00:00`
+  const endOfDay = `${selectedDate}T23:59:59`
+  const { data: existingBookings, error } = await supabase
+    .from('bookings').select('court, start_time, end_time')
+    .in('court', ['1', '2']).in('status', ['pending', 'confirmed', 'reserved'])
+    .gte('start_time', startOfDay).lte('end_time', endOfDay)
+  if (error) { console.error('Error fetching slots:', error); return }
 
-    const updatedSlots = allSlots.map((slot) => {
-      const matchCourtBooking = (courtNum: number) =>
-        existingBookings?.some((booking) => {
-          if (String(booking.court) !== String(courtNum)) return false
-          const rawTimePart = booking.start_time.split('T')[1]
-          return parseInt(rawTimePart.split(':')[0], 10) === slot.start
-        })
-      const formatTime = (hour: number) => {
-        const ampm = hour >= 12 ? 'PM' : 'AM'
-        const displayHour = hour % 12 === 0 ? 12 : hour % 12
-        return `${String(displayHour).padStart(2, '0')}:00 ${ampm}`
-      }
-      return {
-        label: `${formatTime(slot.start)} - ${formatTime(slot.end)}`,
-        court1Status: matchCourtBooking(1) ? 'reserved' as const : 'available' as const,
-        court2Status: matchCourtBooking(2) ? 'reserved' as const : 'available' as const,
-      }
-    })
-    setAvailableSlots(updatedSlots)
-  }
+  const manilaNow = getManilaNow()
+  const isToday = selectedDate === getTodayDateString()
+  const currentHour = manilaNow.getHours()
+
+  const updatedSlots = allSlots.map((slot) => {
+    const matchCourtBooking = (courtNum: number) =>
+      existingBookings?.some((booking) => {
+        if (String(booking.court) !== String(courtNum)) return false
+        const rawTimePart = booking.start_time.split('T')[1]
+        return parseInt(rawTimePart.split(':')[0], 10) === slot.start
+      })
+    const formatTime = (hour: number) => {
+      const ampm = hour >= 12 ? 'PM' : 'AM'
+      const displayHour = hour % 12 === 0 ? 12 : hour % 12
+      return `${String(displayHour).padStart(2, '0')}:00 ${ampm}`
+    }
+
+    // Block any slot that has already started/passed for today
+    const isPast = isToday && slot.start <= currentHour
+
+    return {
+      label: `${formatTime(slot.start)} - ${formatTime(slot.end)}`,
+      court1Status: isPast ? 'past' as const : (matchCourtBooking(1) ? 'reserved' as const : 'available' as const),
+      court2Status: isPast ? 'past' as const : (matchCourtBooking(2) ? 'reserved' as const : 'available' as const),
+    }
+  })
+  setAvailableSlots(updatedSlots)
+}
 
   const fetchBookings = async () => {
     const startOfToday = `${getTodayDateString()}T00:00:00`
@@ -340,7 +355,7 @@ export default function HomePage() {
       return {
         court: String(item.court), start_time: startTime, end_time: endTime,
         customer_name: customerName.trim(), customer_phone: customerPhone.trim().replace(/\s+/g, ''),
-        status: 'pending', reference_code: generatedRef, amount: computedPrice,
+        status: 'pending', reference_code: generatedRef, amount: calculateSlotPrice(item.label),
       }
     })
     const { error } = await supabase.from('bookings').insert(recordsToInsert)
@@ -644,6 +659,8 @@ export default function HomePage() {
                             <span onClick={() => toggleSlot(1, slot.label)} className={`inline-block w-full py-1 rounded-md border font-bold cursor-pointer transition-all ${isC1Selected ? 'bg-[#4D663B] text-white border-[#4D663B]' : 'text-[#4D663B] border-[#4D663B]/30 bg-[#4D663B]/5 hover:bg-[#4D663B]/10'}`}>
                               {isC1Selected ? '✓' : 'Open'}
                             </span>
+                          ) : slot.court1Status === 'past' ? (
+                            <span className="inline-block w-full py-1 rounded-md bg-gray-50 text-gray-300 font-medium border border-transparent text-[10px]">Past</span>
                           ) : (
                             <span className="inline-block w-full py-1 rounded-md bg-gray-100 text-gray-400 font-medium border border-transparent text-[10px]">Taken</span>
                           )}
@@ -653,6 +670,8 @@ export default function HomePage() {
                             <span onClick={() => toggleSlot(2, slot.label)} className={`inline-block w-full py-1 rounded-md border font-bold cursor-pointer transition-all ${isC2Selected ? 'bg-[#4D663B] text-white border-[#4D663B]' : 'text-[#4D663B] border-[#4D663B]/30 bg-[#4D663B]/5 hover:bg-[#4D663B]/10'}`}>
                               {isC2Selected ? '✓' : 'Open'}
                             </span>
+                          ) : slot.court2Status === 'past' ? (
+                            <span className="inline-block w-full py-1 rounded-md bg-gray-50 text-gray-300 font-medium border border-transparent text-[10px]">Past</span>
                           ) : (
                             <span className="inline-block w-full py-1 rounded-md bg-gray-100 text-gray-400 font-medium border border-transparent text-[10px]">Taken</span>
                           )}

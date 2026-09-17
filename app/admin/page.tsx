@@ -3,11 +3,12 @@
 import { useState, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import { supabase } from '@/lib/supabase'
+import Image from 'next/image'
 
 import FullCalendar from '@fullcalendar/react'
 import timeGridPlugin from '@fullcalendar/timegrid'
 import interactionPlugin from '@fullcalendar/interaction'
-import { DateSelectArg, EventInput } from '@fullcalendar/core'
+import {EventInput } from '@fullcalendar/core'
 
 import {
   Dialog,
@@ -18,6 +19,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 
+// ─────────────────────────────────────────────
+// TYPES
+// ─────────────────────────────────────────────
 type CourtKey = 'court1' | 'court2'
 
 interface BookingRecord {
@@ -27,7 +31,7 @@ interface BookingRecord {
   end_time: string
   customer_name: string
   customer_phone: string
-  status: 'pending' | 'reserved' | 'confirmed' | 'expired'
+  status: 'pending' | 'reserved' | 'confirmed' | 'expired' | 'refunded'
   reference_code: string
   screenshot_url?: string
   payment_method?: string
@@ -44,358 +48,438 @@ interface GroupedVerificationRow {
   slotsDescription: string[]
 }
 
-type CourtCalendarProps = {
-  title: string
-  events: EventInput[]
-  onSelect: (selectInfo: DateSelectArg) => void
-  onEventClick: (eventInfo: any) => void
-  onEventChange: (changeInfo: any) => void
+// ─────────────────────────────────────────────
+// STATUS BADGE
+// ─────────────────────────────────────────────
+function StatusBadge({ status }: { status: string }) {
+  const styles: Record<string, string> = {
+    confirmed: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+    expired:   'bg-red-100 text-red-600 border-red-200',
+    pending:   'bg-amber-100 text-amber-700 border-amber-200',
+    reserved:  'bg-blue-100 text-blue-700 border-blue-200',
+    refunded:  'bg-purple-100 text-purple-600 border-purple-200',
+  }
+  return (
+    <span className={`inline-block text-[10px] font-black uppercase tracking-widest px-2 py-0.5 rounded border ${styles[status] ?? 'bg-gray-100 text-gray-500 border-gray-200'}`}>
+      {status}
+    </span>
+  )
 }
 
+// ─────────────────────────────────────────────
+// COURT CALENDAR
+// ─────────────────────────────────────────────
 function CourtCalendar({
-  title,
+  courtNumber,
   events,
-  onSelect,
   onEventClick,
-  onEventChange,
-}: CourtCalendarProps) {
+}: {
+  courtNumber: number
+  events: EventInput[]
+  onEventClick: (info: any) => void
+}) {
   return (
-    <div className="mb-10">
-      <h2 className="text-2xl font-bold mb-4 text-gray-800">{title}</h2>
-      <div className="bg-white p-4 rounded-xl shadow">
+    <div>
+      <div className="flex items-center gap-3 mb-3 px-1">
+        <div className="flex items-center justify-center w-8 h-8 rounded-lg bg-[#4D663B] text-white text-xs font-black">
+          {courtNumber}
+        </div>
+        <h2 className="text-base font-black text-[#223230] uppercase tracking-widest">Court {courtNumber} Overview</h2>
+        <div className="flex-1 h-px bg-[#4D663B]/15" />
+      </div>
+      <div className="bg-white rounded-2xl border border-[#E2E8E5] shadow-sm p-2 md:p-4">
         <FullCalendar
           plugins={[timeGridPlugin, interactionPlugin]}
           initialView="timeGridWeek"
           slotMinTime="08:00:00"
           slotMaxTime="24:00:00"
           allDaySlot={false}
-          editable={true}
-          selectable={true}
+          editable={false}
+          selectable={false}
           height="auto"
-          timeZone="UTC"
-          select={onSelect}
+          timeZone="Asia/Manila"
           events={events}
           eventClick={onEventClick}
-          eventDrop={onEventChange}
-          eventResize={onEventChange}
         />
       </div>
     </div>
   )
 }
 
+// ─────────────────────────────────────────────
+// SECTION HEADER
+// ─────────────────────────────────────────────
+function SectionHeader({ label, title }: { label: string; title: string }) {
+  return (
+    <div className="mb-5">
+      <p className="text-[10px] font-black uppercase tracking-[0.3em] text-[#4D663B] mb-0.5">{label}</p>
+      <h2 className="text-xl font-black text-[#223230] tracking-tight">{title}</h2>
+      <div className="mt-2 h-px bg-[#E2E8E5]" />
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────
+// MAIN ADMIN PAGE
+// ─────────────────────────────────────────────
 export default function AdminPage() {
   const router = useRouter()
   const [checkingAuth, setCheckingAuth] = useState(true)
-  
+
   const [rawBookings, setRawBookings] = useState<BookingRecord[]>([])
+  const [historyBookings, setHistoryBookings] = useState<BookingRecord[]>([])
+  const HISTORY_PAGE_SIZE = 25
+
+  const [historyMonth, setHistoryMonth] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [historySearchInput, setHistorySearchInput] = useState('')
+  const [historySearchQuery, setHistorySearchQuery] = useState('')
+  const [historyPage, setHistoryPage] = useState(0) // zero-indexed
+  const [historyTotalCount, setHistoryTotalCount] = useState(0)
+  const [historyLoading, setHistoryLoading] = useState(false)
   const [court1Events, setCourt1Events] = useState<EventInput[]>([])
   const [court2Events, setCourt2Events] = useState<EventInput[]>([])
   const [groupedReviewRows, setGroupedReviewRows] = useState<GroupedVerificationRow[]>([])
 
+  // Booking modal
   const [open, setOpen] = useState(false)
-  const [isEditing, setIsEditing] = useState(false)
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null)
-  
   const [selectedCourt, setSelectedCourt] = useState<CourtKey>('court1')
   const [selectedStart, setSelectedStart] = useState('')
   const [selectedEnd, setSelectedEnd] = useState('')
   const [customerName, setCustomerName] = useState('')
   const [customerPhone, setCustomerPhone] = useState('')
+  const [selectedCurrentStatus, setSelectedCurrentStatus] = useState<BookingRecord['status'] | ''>('')
 
+  // Report modal
+  const [reportOpen, setReportOpen] = useState(false)
+  const [reportMonth, setReportMonth] = useState(() => {
+    const d = new Date()
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
+  })
+  const [electricityBill, setElectricityBill] = useState('')
+  const [waterBill, setWaterBill] = useState('')
+  const [salariesPaid, setSalariesPaid] = useState('')
+  const [isGenerating, setIsGenerating] = useState(false)
+
+  // ── Auth ──
   useEffect(() => {
     let mounted = true
-
-    const checkSessionState = async () => {
+    const checkSession = async () => {
       const { data: { session } } = await supabase.auth.getSession()
-      
       if (!session) {
         if (mounted) window.location.href = '/'
       } else {
-        if (mounted) {
-          setCheckingAuth(false)
-          refreshAdminDashboard()
-        }
+        if (mounted) { setCheckingAuth(false); refreshAdminDashboard() }
       }
     }
-
-    checkSessionState()
-
+    checkSession()
     const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
-      if ((event === 'SIGNED_OUT' || !session) && mounted) {
-        window.location.href = '/'
-      }
+      if ((event === 'SIGNED_OUT' || !session) && mounted) window.location.href = '/'
     })
-
-    return () => {
-      mounted = false
-      subscription.unsubscribe()
-    }
+    return () => { mounted = false; subscription.unsubscribe() }
   }, [])
 
+  // ── Data fetching ──
   const refreshAdminDashboard = async () => {
     const startOfTodayIso = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
 
-    const { data, error } = await supabase
-      .from('bookings')
-      .select('*')
+    // Active bookings
+    const { data: active } = await supabase
+      .from('bookings').select('*')
       .in('status', ['pending', 'confirmed', 'reserved'])
       .gte('end_time', startOfTodayIso)
 
-    if (error) {
-      console.error('Error fetching admin dashboard matrix:', error)
-      return
-    }
-
-    const records: BookingRecord[] = data || []
+    const records: BookingRecord[] = active || []
     setRawBookings(records)
 
-    const mapToCalendarEvent = (b: BookingRecord) => {
-      const cleanStart = b.start_time.split('+')[0]
-      const cleanEnd = b.end_time.split('+')[0]
-      
-      let color = '#f59e0b' // pending
-      if (b.status === 'reserved') color = '#3b82f6'
-      if (b.status === 'confirmed') color = '#22c55e'
-
-      return {
-        id: b.id,
-        title: `${b.customer_name} (${b.status.toUpperCase()})`,
-        start: cleanStart,
-        end: cleanEnd,
-        color: color,
-      }
-    }
-
-    setCourt1Events(records.filter(r => r.court === '1').map(mapToCalendarEvent))
-    setCourt2Events(records.filter(r => r.court === '2').map(mapToCalendarEvent))
-
-    const reviewQueue = records.filter(r => r.status === 'reserved' || r.status === 'pending')
-    const groupsMap: { [code: string]: GroupedVerificationRow } = {}
-
-    reviewQueue.forEach((item) => {
-      const code = item.reference_code
-      const datePart = item.start_time.split('T')[0].slice(5) 
-      const slotRangeStr = `${item.start_time.substring(11, 16)}-${item.end_time.substring(11, 16)}`
-      const slotDescription = `[Ct ${item.court}] ${datePart} @ ${slotRangeStr}`
-
-      if (!groupsMap[code]) {
-        groupsMap[code] = {
-          reference_code: code,
-          customer_name: item.customer_name,
-          customer_phone: item.customer_phone,
-          payment_method: item.payment_method,
-          screenshot_url: item.screenshot_url,
-          amount: item.amount || 0,
-          slotsDescription: [slotDescription]
-        }
-      } else {
-        groupsMap[code].slotsDescription.push(slotDescription)
-        if (item.amount && !groupsMap[code].amount) {
-          groupsMap[code].amount = item.amount
-        }
-      }
+    const mapToEvent = (b: BookingRecord) => ({
+      id: b.id,
+      title: `${b.customer_name} (${b.status.toUpperCase()})`,
+      start: b.start_time.split('+')[0],
+      end: b.end_time.split('+')[0],
+      color: b.status === 'pending' ? '#f59e0b' : b.status === 'reserved' ? '#3b82f6' : '#22c55e',
     })
 
+    setCourt1Events(records.filter(r => r.court === '1').map(mapToEvent))
+    setCourt2Events(records.filter(r => r.court === '2').map(mapToEvent))
+
+    // Verification queue
+    const queue = records.filter(r => r.status === 'reserved' || r.status === 'pending')
+    const groupsMap: Record<string, GroupedVerificationRow> = {}
+    queue.forEach((item) => {
+      const code = item.reference_code
+      const datePart = item.start_time.split('T')[0].slice(5)
+      const slotStr = `[Ct ${item.court}] ${datePart} @ ${item.start_time.substring(11,16)}–${item.end_time.substring(11,16)}`
+      if (!groupsMap[code]) {
+        groupsMap[code] = { reference_code: code, customer_name: item.customer_name, customer_phone: item.customer_phone, payment_method: item.payment_method, screenshot_url: item.screenshot_url, amount: item.amount || 0, slotsDescription: [slotStr] }
+      } else {
+        groupsMap[code].slotsDescription.push(slotStr)
+        groupsMap[code].amount += item.amount || 0
+      }
+    })
     setGroupedReviewRows(Object.values(groupsMap))
   }
 
-  const handleLogOut = async () => {
-    const confirmSignout = window.confirm('Are you sure you want to log out of the admin panel?')
-    if (!confirmSignout) return
+  const fetchHistoryBookings = async () => {
+    setHistoryLoading(true)
+    const [year, month] = historyMonth.split('-').map(Number)
+    const monthStart = `${year}-${String(month).padStart(2, '0')}-01T00:00:00`
+    const nextMonth = month === 12
+      ? `${year + 1}-01-01T00:00:00`
+      : `${year}-${String(month + 1).padStart(2, '0')}-01T00:00:00`
 
+    let query = supabase
+      .from('bookings')
+      .select('*', { count: 'exact' })
+      .in('status', ['confirmed', 'expired', 'refunded'])
+      .gte('start_time', monthStart)
+      .lt('start_time', nextMonth)
+      .order('start_time', { ascending: false })
+
+    const trimmedSearch = historySearchQuery.trim()
+    if (trimmedSearch) {
+      query = query.or(`reference_code.ilike.%${trimmedSearch}%,customer_name.ilike.%${trimmedSearch}%`)
+    }
+
+    const from = historyPage * HISTORY_PAGE_SIZE
+    const to = from + HISTORY_PAGE_SIZE - 1
+    query = query.range(from, to)
+
+    const { data, error, count } = await query
+    if (error) {
+      console.error('Failed to fetch transaction history:', error)
+      setHistoryLoading(false)
+      return
+    }
+    setHistoryBookings(data || [])
+    setHistoryTotalCount(count || 0)
+    setHistoryLoading(false)
+  }
+// Debounce the search input into an actual query value
+useEffect(() => {
+  const t = setTimeout(() => {
+    setHistorySearchQuery(historySearchInput)
+    setHistoryPage(0)
+  }, 350)
+  return () => clearTimeout(t)
+}, [historySearchInput])
+
+// Reset to page 0 whenever the month changes
+useEffect(() => {
+  setHistoryPage(0)
+}, [historyMonth])
+
+// Actually fetch whenever month / search / page changes (after auth resolves)
+useEffect(() => {
+  if (checkingAuth) return
+  fetchHistoryBookings()
+}, [checkingAuth, historyMonth, historySearchQuery, historyPage])
+
+
+  const handleLogOut = async () => {
+    if (!window.confirm('Log out of admin panel?')) return
     try {
       await supabase.auth.signOut()
       await fetch('/api/auth/logout', { method: 'POST' })
       router.push('/')
       router.refresh()
+    } catch { window.location.href = '/' }
+  }
+
+  const handleBulkUpdateStatus = async (refCode: string, status: 'confirmed' | 'expired') => {
+  const { error } = await supabase.from('bookings').update({ status }).eq('reference_code', refCode)
+  if (error) { alert('Failed to update status.'); return }
+  refreshAdminDashboard()
+  fetchHistoryBookings()
+}
+
+  // ── Booking modal handlers ──
+   const handleEventClick = (ev: any, court: CourtKey) => {
+    const match = rawBookings.find(r => r.id === ev.id)
+    if (!match) return
+    setSelectedCourt(court)
+    setSelectedEventId(match.id)
+    setCustomerName(match.customer_name)
+    setCustomerPhone(match.customer_phone)
+    setSelectedStart(match.start_time)
+    setSelectedEnd(match.end_time)
+    setSelectedCurrentStatus(match.status)
+    setOpen(true)
+  }
+
+  const handleSetStatus = async (status: 'confirmed' | 'expired' | 'refunded') => {
+    if (!selectedEventId) return
+    const { error } = await supabase.from('bookings').update({ status }).eq('id', selectedEventId)
+    if (error) { alert('Failed to update status.'); return }
+    setOpen(false)
+    refreshAdminDashboard()
+    fetchHistoryBookings()
+  }
+
+
+
+
+  // ── Report generator ──
+  const generateReport = async () => {
+    setIsGenerating(true)
+    try {
+      const [year, month] = reportMonth.split('-').map(Number)
+      const monthStart = `${year}-${String(month).padStart(2, '0')}-01T00:00:00`
+      const nextMonth = month === 12 ? `${year + 1}-01-01T00:00:00` : `${year}-${String(month + 1).padStart(2, '0')}-01T00:00:00`
+
+      const { data, error } = await supabase
+        .from('bookings').select('*')
+        .eq('status', 'confirmed')
+        .gte('start_time', monthStart)
+        .lt('start_time', nextMonth)
+
+      if (error) throw error
+
+      const records: BookingRecord[] = data || []
+      const c1 = records.filter(r => r.court === '1')
+      const c2 = records.filter(r => r.court === '2')
+
+      const stripTz = (ts: string) => ts.split('+')[0].split('Z')[0]
+      const calcHours = (items: BookingRecord[]) =>
+        items.reduce((sum, b) => {
+          const start = new Date(stripTz(b.start_time)).getTime()
+          const end = new Date(stripTz(b.end_time)).getTime()
+          const hrs = (end - start) / 3600000
+          return sum + (hrs > 0 ? hrs : 0)
+        }, 0)
+      const c1Hours = calcHours(c1)
+      const c2Hours = calcHours(c2)
+
+      const c1Amount = c1.reduce((sum, b) => sum + (b.amount || 0), 0)
+      const c2Amount = c2.reduce((sum, b) => sum + (b.amount || 0), 0)
+      const grossProfit = c1Amount + c2Amount
+
+      const electricity = parseFloat(electricityBill) || 0
+      const water = parseFloat(waterBill) || 0
+      const salaries = parseFloat(salariesPaid) || 0
+      const totalDeductions = electricity + water + salaries
+      const netProfit = grossProfit - totalDeductions
+
+      const monthName = new Date(year, month - 1, 1).toLocaleString('default', { month: 'long' })
+
+      const divider = '─'.repeat(40)
+      const report = [
+        `KYEPSU PICKLEBALL COURT`,
+        `Monthly Financial Report`,
+        divider,
+        `${monthName} ${year}`,
+        divider,
+        ``,
+        `INCOME`,
+        ``,
+        `  Court 1`,
+        `    Total Hours Booked : ${c1.length} hrs`,
+        `    Total Amount       : ₱${c1Amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        ``,
+        `  Court 2`,
+        `    Total Hours Booked : ${c2.length} hrs`,
+        `    Total Amount       : ₱${c2Amount.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        ``,
+        `  Combined Hours       : ${(c1Hours + c2Hours).toFixed(1)} hrs`,
+        `  Gross Income         : ₱${grossProfit.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        ``,
+        divider,
+        ``,
+        `DEDUCTIONS`,
+        ``,
+        `  Electricity Bill     : ₱${electricity.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        `  Water Bill           : ₱${water.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        `  Salaries Paid        : ₱${salaries.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        ``,
+        `  Total Deductions     : ₱${totalDeductions.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        ``,
+        divider,
+        ``,
+        `NET PROFIT             : ₱${netProfit.toLocaleString('en-PH', { minimumFractionDigits: 2 })}`,
+        ``,
+        divider,
+        ``,
+        `  Bookings Confirmed`,
+        `    Court 1            : ${c1.length} slot(s)`,
+        `    Court 2            : ${c2.length} slot(s)`,
+        ``,
+        `  Report Generated     : ${new Date().toLocaleString('en-PH')}`,
+        divider,
+      ].join('\n')
+
+      const blob = new Blob([report], { type: 'text/plain' })
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = `KYEPSU-Report-${monthName}-${year}.txt`
+      a.click()
+      URL.revokeObjectURL(url)
+      setReportOpen(false)
     } catch (err) {
-      console.error('Logout operation error:', err)
-      window.location.href = '/'
+      console.error(err)
+      alert('Failed to generate report. Please try again.')
+    } finally {
+      setIsGenerating(false)
     }
   }
 
-  const handleBulkUpdateStatus = async (referenceCode: string, targetStatus: 'confirmed' | 'expired') => {
-    const { error } = await supabase
-      .from('bookings')
-      .update({ status: targetStatus })
-      .eq('reference_code', referenceCode)
-
-    if (error) {
-      alert('Failed to modify bulk status changes.')
-      return
-    }
-    refreshAdminDashboard()
-  }
-
-  const handleDateSelect = (selectInfo: DateSelectArg, court: CourtKey) => {
-    setSelectedCourt(court)
-    setSelectedStart(selectInfo.startStr)
-    setSelectedEnd(selectInfo.endStr)
-    setCustomerName('')
-    setCustomerPhone('')
-    setIsEditing(false)
-    setOpen(true)
-  }
-
-  const handleEventClick = (clickedEvent: any, court: CourtKey) => {
-    const matchedRecord = rawBookings.find(r => r.id === clickedEvent.id)
-    if (!matchedRecord) return
-
-    setSelectedCourt(court)
-    setSelectedEventId(matchedRecord.id)
-    setCustomerName(matchedRecord.customer_name)
-    setCustomerPhone(matchedRecord.customer_phone)
-    setSelectedStart(clickedEvent.startStr || matchedRecord.start_time)
-    setSelectedEnd(clickedEvent.endStr || matchedRecord.end_time)
-    setIsEditing(true)
-    setOpen(true)
-  }
-
-  const createReservation = async () => {
-    if (!customerName.trim()) return
-    const courtIdStr = selectedCourt === 'court1' ? '1' : '2'
-
-    const hasOverlap = rawBookings
-      .filter(r => r.court === courtIdStr)
-      .some(b => new Date(selectedStart) < new Date(b.end_time) && new Date(selectedEnd) > new Date(b.start_time))
-
-    if (hasOverlap) {
-      alert('This schedule overlaps an existing reservation.')
-      return
-    }
-
-    const { error } = await supabase
-      .from('bookings')
-      .insert([{
-        court: courtIdStr,
-        start_time: selectedStart,
-        end_time: selectedEnd,
-        customer_name: customerName.trim(),
-        customer_phone: customerPhone.trim() || 'ADMIN_DIRECT',
-        status: 'confirmed',
-        amount: 0, 
-        reference_code: `ADM-${Math.floor(100000 + Math.random() * 900000)}`
-      }])
-
-    if (error) {
-      alert('Failed writing admin reservation slot.')
-      return
-    }
-
-    setOpen(false)
-    refreshAdminDashboard()
-  }
-
-  const updateReservation = async () => {
-    if (!selectedEventId) return
-
-    const { error } = await supabase
-      .from('bookings')
-      .update({
-        customer_name: customerName.trim(),
-        customer_phone: customerPhone.trim()
-      })
-      .eq('id', selectedEventId)
-
-    if (error) {
-      alert('Failed updating core customer records.')
-      return
-    }
-
-    setOpen(false)
-    setIsEditing(false)
-    refreshAdminDashboard()
-  }
-
-  const deleteReservation = async () => {
-    if (!selectedEventId) return
-
-    const { error } = await supabase
-      .from('bookings')
-      .delete()
-      .eq('id', selectedEventId)
-
-    if (error) {
-      alert('Failed terminating database registration slot.')
-      return
-    }
-
-    setOpen(false)
-    setIsEditing(false)
-    refreshAdminDashboard()
-  }
-
-  const handleEventChange = async (changeInfo: any, court: CourtKey) => {
-    const eventObj = changeInfo.event
-    const courtIdStr = court === 'court1' ? '1' : '2'
-    const updatedStart = eventObj.start?.toISOString()
-    const updatedEnd = eventObj.end?.toISOString()
-
-    if (!updatedStart || !updatedEnd) return
-
-    const hasOverlap = rawBookings.some((b) => {
-      if (b.id === eventObj.id || b.court !== courtIdStr) return false
-      return new Date(updatedStart) < new Date(b.end_time) && new Date(updatedEnd) > new Date(b.start_time)
-    })
-
-    if (hasOverlap) {
-      alert('Modification rejected: Slots overlap another active booking entry.')
-      changeInfo.revert()
-      return
-    }
-
-    const { error } = await supabase
-      .from('bookings')
-      .update({
-        start_time: updatedStart,
-        end_time: updatedEnd
-      })
-      .eq('id', eventObj.id)
-
-    if (error) {
-      alert('Failed applying drag/resize updates to database.')
-      changeInfo.revert()
-      return
-    }
-
-    refreshAdminDashboard()
-  }
-
+  // ── Loading ──
   if (checkingAuth) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-center space-y-2">
-          <div className="w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full animate-spin mx-auto" />
-          <p className="text-sm font-medium text-gray-500">Authenticating access security layers...</p>
+      <div className="min-h-screen bg-[#FAFAF9] flex items-center justify-center">
+        <div className="text-center space-y-3">
+          <div className="w-10 h-10 border-4 border-[#4D663B] border-t-transparent rounded-full animate-spin mx-auto" />
+          <p className="text-sm font-semibold text-[#223230]/50 tracking-wide">Verifying admin access…</p>
         </div>
       </div>
     )
   }
 
+  // ─────────────────────────────────────────────
+  // RENDER
+  // ─────────────────────────────────────────────
   return (
     <>
-      <div className="bg-gray-100 min-h-screen pb-12">
-        <header className="bg-white border-b sticky top-0 z-50 shadow-xs">
-          <div className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <span className="w-3 h-3 bg-blue-600 rounded-full animate-pulse" />
-              <span className="font-bold text-gray-900 text-sm tracking-wide uppercase">Admin Operations Management</span>
-            </div>
-            
+      <div className="bg-[#F5F6F3] min-h-screen pb-16">
+
+        {/* ── HEADER ── */}
+        <header className="sticky top-0 z-50 bg-[#FAFAF9]/95 backdrop-blur-md border-b border-[#E2E8E5]">
+          <div className="h-0.5 w-full bg-gradient-to-r from-[#4D663B] via-[#7a9e5c] to-[#4D663B]" />
+          <div className="max-w-7xl mx-auto px-4 md:px-6 py-3 flex items-center justify-between gap-4">
+
+            {/* Left: logo + label */}
             <div className="flex items-center gap-3">
-              <Button 
-                variant="outline" 
+              <Image src="/logo.png" alt="KYEPSU" width={44} height={44} className="rounded-lg" />
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-[#4D663B] leading-none">KYEPSU</p>
+                <p className="text-xs font-bold text-[#223230] leading-tight">Admin Panel</p>
+              </div>
+            </div>
+
+            {/* Right: actions */}
+            <div className="flex items-center gap-2">
+              <Button
                 size="sm"
-                className="text-gray-700 border-gray-200 font-semibold"
+                className="bg-[#4D663B] hover:bg-[#3b502e] text-white font-bold text-xs gap-1.5"
+                onClick={() => setReportOpen(true)}
+              >
+                📊 Generate Report
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-xs font-bold border-[#E2E8E5] text-[#223230]"
                 onClick={() => router.push('/')}
               >
-                ← Back to Home
+                ← Homepage
               </Button>
-              <Button 
-                variant="destructive" 
+              <Button
+                variant="destructive"
                 size="sm"
-                className="font-semibold px-4"
+                className="text-xs font-bold"
                 onClick={handleLogOut}
               >
                 Log Out
@@ -404,83 +488,80 @@ export default function AdminPage() {
           </div>
         </header>
 
-        <div className="p-6 space-y-8">
-          {/* QUEUE TABLE */}
-          <div className="bg-white rounded-xl shadow-md p-6 max-w-6xl mx-auto">
-            <div className="mb-4">
-              <h1 className="text-2xl font-extrabold text-gray-900">Incoming Receipts & Verification Queue</h1>
-              <p className="text-xs text-gray-500">Review grouped bookings by reference number and execute bulk actions.</p>
-            </div>
+        <div className="max-w-7xl mx-auto px-4 md:px-6 py-8 space-y-10">
 
-            <div className="overflow-x-auto border rounded-xl">
-              <table className="w-full text-sm text-left text-gray-600 bg-white">
-                <thead className="text-xs uppercase bg-gray-50 text-gray-700 border-b">
+          {/* ── LEGEND ── */}
+          <div className="flex flex-wrap gap-3">
+            {[
+              { label: 'Pending', color: 'bg-amber-400' },
+              { label: 'Reserved', color: 'bg-blue-500' },
+              { label: 'Confirmed', color: 'bg-emerald-500' },
+              { label: 'Expired', color: 'bg-red-400' },
+              { label: 'Refunded', color: 'bg-purple-500' },
+            ].map(({ label, color }) => (
+              <span key={label} className="flex items-center gap-1.5 text-xs font-bold text-[#223230]/70">
+                <span className={`w-2.5 h-2.5 rounded-sm ${color}`} />{label}
+              </span>
+            ))}
+          </div>
+
+          {/* ── VERIFICATION QUEUE ── */}
+          <section className="bg-white rounded-2xl border border-[#E2E8E5] shadow-sm p-6">
+            <SectionHeader label="Action Required" title="Payment Verification Queue" />
+            <div className="overflow-x-auto rounded-xl border border-[#E2E8E5]">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-[#4D663B]/6 border-b border-[#E2E8E5]">
                   <tr>
-                    <th className="px-4 py-3">Reference Code</th>
-                    <th className="px-4 py-3">Customer Details</th>
-                    <th className="px-4 py-3">Linked Court Time Slots</th>
-                    <th className="px-4 py-3">Total Amount</th>
-                    <th className="px-4 py-3">Method</th>
-                    <th className="px-4 py-3">Receipt Screenshot</th>
-                    <th className="px-4 py-3 text-center">Actions</th>
+                    {['Reference', 'Customer', 'Slots', 'Amount', 'Method', 'Receipt', 'Actions'].map(h => (
+                      <th key={h} className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#223230]/50">{h}</th>
+                    ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y">
+                <tbody className="divide-y divide-[#E2E8E5]">
                   {groupedReviewRows.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="text-center py-8 text-gray-400 font-medium">
-                        No transactions awaiting verification.
+                      <td colSpan={7} className="text-center py-10 text-[#223230]/30 text-sm font-semibold">
+                        No pending transactions — you're all caught up.
                       </td>
                     </tr>
                   ) : (
                     groupedReviewRows.map((row) => (
-                      <tr key={row.reference_code} className="hover:bg-gray-50/70 transition-colors">
-                        <td className="px-4 py-3 font-mono font-bold text-blue-600">{row.reference_code}</td>
+                      <tr key={row.reference_code} className="hover:bg-[#4D663B]/3 transition-colors">
+                        <td className="px-4 py-3 font-mono font-bold text-[#4D663B] text-xs">{row.reference_code}</td>
                         <td className="px-4 py-3">
-                          <div className="font-semibold text-gray-900">{row.customer_name}</div>
-                          <div className="text-xs text-gray-400">{row.customer_phone}</div>
+                          <p className="font-bold text-[#223230] text-xs">{row.customer_name}</p>
+                          <p className="text-[10px] text-gray-400">{row.customer_phone}</p>
                         </td>
-                        <td className="px-4 py-3 max-w-xs">
+                        <td className="px-4 py-3 max-w-[200px]">
                           <div className="flex flex-wrap gap-1">
-                            {row.slotsDescription.map((desc, idx) => (
-                              <span key={idx} className="text-[10px] bg-slate-100 border text-slate-800 font-semibold px-1.5 py-0.5 rounded">
-                                {desc}
-                              </span>
+                            {row.slotsDescription.map((d, i) => (
+                              <span key={i} className="text-[10px] bg-[#4D663B]/8 text-[#4D663B] font-bold px-1.5 py-0.5 rounded border border-[#4D663B]/20">{d}</span>
                             ))}
                           </div>
                         </td>
-                        <td className="px-4 py-3 font-extrabold text-gray-900">₱{row.amount}</td>
-                        <td className="px-4 py-3 uppercase text-xs font-bold text-gray-500">{row.payment_method || 'N/A'}</td>
+                        <td className="px-4 py-3 font-black text-[#223230]">₱{row.amount.toLocaleString()}</td>
+                        <td className="px-4 py-3 text-[10px] font-bold uppercase text-gray-400">{row.payment_method || '—'}</td>
                         <td className="px-4 py-3">
                           {row.screenshot_url ? (
-                            <a 
-                              href={row.screenshot_url} 
-                              target="_blank" 
-                              rel="noreferrer" 
-                              className="text-xs font-semibold text-blue-600 underline hover:text-blue-800 flex items-center gap-1"
-                            >
-                              View Receipt ↗
+                            <a href={row.screenshot_url} target="_blank" rel="noreferrer"
+                              className="text-xs font-bold text-[#4D663B] underline underline-offset-2 hover:text-[#3b502e]">
+                              View ↗
                             </a>
                           ) : (
-                            <span className="text-xs text-amber-600 font-medium italic">Awaiting Upload...</span>
+                            <span className="text-[10px] italic text-amber-500 font-semibold">Awaiting…</span>
                           )}
                         </td>
-                        <td className="px-4 py-3 text-center">
-                          <div className="flex justify-center gap-1.5">
-                            <Button 
-                              size="sm" 
-                              className="bg-emerald-600 hover:bg-emerald-700 text-xs h-7 px-3 font-semibold"
-                              onClick={() => handleBulkUpdateStatus(row.reference_code, 'confirmed')}
-                            >
-                              Approve All
+                        <td className="px-4 py-3">
+                          <div className="flex gap-1.5">
+                            <Button size="sm"
+                              className="bg-[#4D663B] hover:bg-[#3b502e] text-white text-[10px] h-7 px-3 font-black"
+                              onClick={() => handleBulkUpdateStatus(row.reference_code, 'confirmed')}>
+                              Approve
                             </Button>
-                            <Button 
-                              size="sm" 
-                              variant="destructive" 
-                              className="text-xs h-7 px-3 font-semibold"
-                              onClick={() => handleBulkUpdateStatus(row.reference_code, 'expired')}
-                            >
-                              Reject All
+                            <Button size="sm" variant="destructive"
+                              className="text-[10px] h-7 px-3 font-black"
+                              onClick={() => handleBulkUpdateStatus(row.reference_code, 'expired')}>
+                              Reject
                             </Button>
                           </div>
                         </td>
@@ -490,83 +571,243 @@ export default function AdminPage() {
                 </tbody>
               </table>
             </div>
-          </div>
+          </section>
 
-          {/* CALENDARS GRID */}
-          <div className="max-w-6xl mx-auto space-y-4">
+          {/* ── TRANSACTION HISTORY ── */}
+          <section className="bg-white rounded-2xl border border-[#E2E8E5] shadow-sm p-6">
+            <SectionHeader label="Records" title="Transaction History" />
+
+            {/* Filters */}
+            <div className="flex flex-col sm:flex-row gap-3 mb-4">
+              <div className="flex flex-col gap-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#4D663B]">Month</label>
+                <Input
+                  type="month"
+                  value={historyMonth}
+                  onChange={(e) => setHistoryMonth(e.target.value)}
+                  className="w-40"
+                />
+              </div>
+              <div className="flex flex-col gap-1 flex-1">
+                <label className="text-[10px] font-black uppercase tracking-widest text-[#4D663B]">
+                  Search (Reference or Name)
+                </label>
+                <Input
+                  placeholder="e.g. PB-1234567890 or Juan Dela Cruz"
+                  value={historySearchInput}
+                  onChange={(e) => setHistorySearchInput(e.target.value)}
+                />
+              </div>
+            </div>
+
+            <div className="overflow-x-auto rounded-xl border border-[#E2E8E5]">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-[#4D663B]/6 border-b border-[#E2E8E5]">
+                  <tr>
+                    {['Reference', 'Customer', 'Court', 'Date', 'Time Slot', 'Amount', 'Method', 'Status'].map(h => (
+                      <th key={h} className="px-4 py-3 text-[10px] font-black uppercase tracking-widest text-[#223230]/50">{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#E2E8E5]">
+                  {historyLoading ? (
+                    <tr>
+                      <td colSpan={8} className="text-center py-10 text-[#223230]/30 text-sm font-semibold">Loading…</td>
+                    </tr>
+                  ) : historyBookings.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="text-center py-10 text-[#223230]/30 text-sm font-semibold">
+                        No transactions found for this filter.
+                      </td>
+                    </tr>
+                  ) : (
+                    historyBookings.map((b) => {
+                      const date = b.start_time.split('T')[0]
+                      const startT = b.start_time.substring(11, 16)
+                      const endT = b.end_time.substring(11, 16)
+                      return (
+                        <tr key={b.id} className="hover:bg-[#4D663B]/3 transition-colors">
+                          <td className="px-4 py-3 font-mono text-[10px] font-bold text-[#4D663B]">{b.reference_code}</td>
+                          <td className="px-4 py-3">
+                            <p className="font-bold text-[#223230] text-xs">{b.customer_name}</p>
+                            <p className="text-[10px] text-gray-400">{b.customer_phone}</p>
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="inline-flex items-center justify-center w-6 h-6 rounded-md bg-[#4D663B] text-white text-[10px] font-black">{b.court}</span>
+                          </td>
+                          <td className="px-4 py-3 text-xs text-[#223230]/70 font-semibold">{date}</td>
+                          <td className="px-4 py-3 text-xs font-mono text-[#223230]/70">{startT}–{endT}</td>
+                          <td className="px-4 py-3 font-black text-[#223230] text-xs">₱{(b.amount || 0).toLocaleString()}</td>
+                          <td className="px-4 py-3 text-[10px] font-bold uppercase text-gray-400">{b.payment_method || '—'}</td>
+                          <td className="px-4 py-3"><StatusBadge status={b.status} /></td>
+                        </tr>
+                      )
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination */}
+            {historyTotalCount > 0 && (
+              <div className="flex items-center justify-between mt-4">
+                <p className="text-xs font-semibold text-[#223230]/50">
+                  Showing {historyPage * HISTORY_PAGE_SIZE + 1}–{Math.min((historyPage + 1) * HISTORY_PAGE_SIZE, historyTotalCount)} of {historyTotalCount}
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline" size="sm" className="text-xs font-bold"
+                    disabled={historyPage === 0 || historyLoading}
+                    onClick={() => setHistoryPage((p) => Math.max(0, p - 1))}
+                  >
+                    ← Previous
+                  </Button>
+                  <Button
+                    variant="outline" size="sm" className="text-xs font-bold"
+                    disabled={(historyPage + 1) * HISTORY_PAGE_SIZE >= historyTotalCount || historyLoading}
+                    onClick={() => setHistoryPage((p) => p + 1)}
+                  >
+                    Next →
+                  </Button>
+                </div>
+              </div>
+            )}
+          </section>
+
+          {/* ── CALENDARS ── */}
+          <section className="space-y-6">
+            <div>
+              <p className="text-xs text-[#223230]/40 mt-1">
+                Click an existing booking to update its status. New bookings can only be made by customers from the homepage.
+              </p>
+            </div>
             <CourtCalendar
-              title="Court 1 Overview"
+              courtNumber={1}
               events={court1Events}
-              onSelect={(info) => handleDateSelect(info, 'court1')}
               onEventClick={(info) => handleEventClick(info.event, 'court1')}
-              onEventChange={(info) => handleEventChange(info, 'court1')}
             />
-
             <CourtCalendar
-              title="Court 2 Overview"
+              courtNumber={2}
               events={court2Events}
-              onSelect={(info) => handleDateSelect(info, 'court2')}
               onEventClick={(info) => handleEventClick(info.event, 'court2')}
-              onEventChange={(info) => handleEventChange(info, 'court2')}
             />
-          </div>
+          </section>
         </div>
       </div>
 
-      {/* MANAGE BOOKING DIALOG MODAL */}
+      {/* ── BOOKING DIALOG ── */}
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent>
+        <DialogContent className="sm:max-w-sm">
           <DialogHeader>
-            <DialogTitle>
-              {isEditing ? 'Modify Reservation Details' : 'Create Admin Overwrite Reservation'}
-            </DialogTitle>
+            <DialogTitle className="font-black text-[#223230]">Booking Details</DialogTitle>
           </DialogHeader>
-
           <div className="space-y-4 pt-2">
-            <div className="bg-slate-50 border rounded-lg p-3">
-              <span className="text-[11px] font-bold text-gray-400 uppercase block mb-1">Target Coordinates</span>
-              <p className="text-xs font-mono font-medium text-slate-700">
-                Court: <span className="text-blue-600 font-bold uppercase">{selectedCourt}</span>
-              </p>
-              <p className="text-xs font-mono font-medium text-slate-700">
-                Timeline: <span className="text-emerald-600 font-bold">{selectedStart.substring(0, 16).replace('T', ' ')}</span> to <span className="text-emerald-600 font-bold">{selectedEnd.substring(0, 16).replace('T', ' ')}</span>
-              </p>
+            <div className="bg-[#4D663B]/6 border border-[#4D663B]/20 rounded-xl p-3 text-xs font-mono space-y-1.5">
+              <p className="text-[#223230]/60"><span className="font-black text-[#4D663B]">Court:</span> {selectedCourt === 'court1' ? 'Court 1' : 'Court 2'}</p>
+              <p className="text-[#223230]/60"><span className="font-black text-[#4D663B]">Customer:</span> {customerName}</p>
+              <p className="text-[#223230]/60"><span className="font-black text-[#4D663B]">Phone:</span> {customerPhone}</p>
+              <p className="text-[#223230]/60"><span className="font-black text-[#4D663B]">From:</span> {selectedStart.substring(0, 16).replace('T', ' ')}</p>
+              <p className="text-[#223230]/60"><span className="font-black text-[#4D663B]">To:</span> {selectedEnd.substring(0, 16).replace('T', ' ')}</p>
+              <div className="flex items-center gap-2 pt-1">
+                <span className="font-black text-[#4D663B]">Status:</span>
+                {selectedCurrentStatus && <StatusBadge status={selectedCurrentStatus} />}
+              </div>
             </div>
+
+            <div className="space-y-2">
+              <label className="text-[10px] font-black uppercase tracking-widest text-[#4D663B] block">Update Status</label>
+              <div className="grid grid-cols-1 gap-2">
+                <Button
+                  className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-bold disabled:opacity-40"
+                  disabled={selectedCurrentStatus === 'confirmed'}
+                  onClick={() => handleSetStatus('confirmed')}
+                >
+                  Mark as Confirmed
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="w-full font-bold disabled:opacity-40"
+                  disabled={selectedCurrentStatus === 'expired'}
+                  onClick={() => handleSetStatus('expired')}
+                >
+                  Mark as Expired / Cancelled
+                </Button>
+                <Button
+                  className="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold disabled:opacity-40"
+                  disabled={selectedCurrentStatus === 'refunded'}
+                  onClick={() => handleSetStatus('refunded')}
+                >
+                  Mark as Refunded
+                </Button>
+              </div>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── REPORT DIALOG ── */}
+      <Dialog open={reportOpen} onOpenChange={setReportOpen}>
+        <DialogContent className="sm:max-w-sm">
+          <DialogHeader>
+            <DialogTitle className="font-black text-[#223230]">Generate Monthly Report</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 pt-2">
+            <div>
+              <label className="text-[10px] font-black uppercase tracking-widest text-[#4D663B] block mb-1">Report Month</label>
+              <Input
+                type="month"
+                value={reportMonth}
+                onChange={(e) => setReportMonth(e.target.value)}
+              />
+            </div>
+
+            <div className="h-px bg-[#E2E8E5]" />
+            <p className="text-[10px] font-black uppercase tracking-widest text-[#223230]/40">Deductions</p>
 
             <div className="space-y-3">
               <div>
-                <label className="text-xs font-bold text-gray-500 block mb-1">Customer Name</label>
+                <label className="text-xs font-semibold text-[#223230]/60 block mb-1">Electricity Bill (₱)</label>
                 <Input
-                  placeholder="e.g. Coach Kyle"
-                  value={customerName}
-                  onChange={(e) => setCustomerName(e.target.value)}
+                  type="number"
+                  placeholder="e.g. 3500"
+                  value={electricityBill}
+                  onChange={(e) => setElectricityBill(e.target.value)}
+                  min="0"
                 />
               </div>
-
               <div>
-                <label className="text-xs font-bold text-gray-500 block mb-1">Mobile Contact String</label>
+                <label className="text-xs font-semibold text-[#223230]/60 block mb-1">Water Bill (₱)</label>
                 <Input
-                  placeholder="e.g. 09123456789"
-                  value={customerPhone}
-                  onChange={(e) => setCustomerPhone(e.target.value)}
+                  type="number"
+                  placeholder="e.g. 800"
+                  value={waterBill}
+                  onChange={(e) => setWaterBill(e.target.value)}
+                  min="0"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-semibold text-[#223230]/60 block mb-1">Salaries Paid (₱)</label>
+                <Input
+                  type="number"
+                  placeholder="e.g. 12000"
+                  value={salariesPaid}
+                  onChange={(e) => setSalariesPaid(e.target.value)}
+                  min="0"
                 />
               </div>
             </div>
 
-            {isEditing ? (
-              <div className="space-y-2 pt-2">
-                <Button className="w-full bg-slate-900 hover:bg-slate-800" onClick={updateReservation}>
-                  Update Basic Records
-                </Button>
-                <Button variant="destructive" className="w-full" onClick={deleteReservation}>
-                  Delete Booking Entirely
-                </Button>
-              </div>
-            ) : (
-              <Button className="w-full bg-emerald-600 hover:bg-emerald-700 mt-2" onClick={createReservation}>
-                Inject Block Reservation
-              </Button>
-            )}
+            <Button
+              className="w-full bg-[#4D663B] hover:bg-[#3b502e] text-white font-bold"
+              disabled={isGenerating || !reportMonth}
+              onClick={generateReport}
+            >
+              {isGenerating ? 'Generating…' : 'Download Report (.txt)'}
+            </Button>
+
+            <p className="text-[10px] text-[#223230]/30 text-center leading-relaxed">
+              Only <strong>confirmed</strong> bookings for the selected month are included. Leave deduction fields blank to treat them as ₱0.
+            </p>
           </div>
         </DialogContent>
       </Dialog>
