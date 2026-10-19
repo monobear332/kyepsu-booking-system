@@ -82,7 +82,7 @@ function ReadOnlyCalendar({
             center: 'title',
             right: '',
           }}
-          slotMinTime="08:00:00"
+          slotMinTime="06:00:00"
           slotMaxTime="24:00:00"
           allDaySlot={false}
           editable={false}
@@ -108,7 +108,7 @@ function ReadOnlyCalendar({
 // ─────────────────────────────────────────────
 const generateSlots = () => {
   const slots = []
-  for (let hour = 8; hour < 24; hour++) {
+  for (let hour = 6; hour < 24; hour++) {
     slots.push({ start: hour, end: hour + 1 })
   }
   return slots
@@ -308,7 +308,7 @@ export default function HomePage() {
     }
 
     // Block any slot that has already started/passed for today
-    const isPast = isToday && slot.start <= currentHour
+    const isPast = isToday && slot.start < currentHour
 
     return {
       label: `${formatTime(slot.start)} - ${formatTime(slot.end)}`,
@@ -745,7 +745,7 @@ export default function HomePage() {
               <div className="flex justify-center pt-2">
                 <Turnstile
                   ref={turnstileRef}
-                  siteKey="1x00000000000000000000AA"
+                  siteKey="0x4AAAAAAFboskHvUBcywVvJ"
                   onSuccess={(token) => setTurnstileToken(token)}
                   onExpire={() => setTurnstileToken(null)}
                   onError={() => setTurnstileToken(null)}
@@ -812,19 +812,33 @@ export default function HomePage() {
                 {selectedMethod === 'gcash' ? (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-gray-600">
-                      Send to GCash: <span className="font-bold text-blue-600">0912-345-6789</span> (John D.)
+                      Send to GCash: <span className="font-bold text-blue-600">0976-105-8717</span> (Kyle O.)
                     </p>
                     <div className="w-44 h-44 bg-white p-2 border border-blue-200 rounded-xl mx-auto shadow-sm flex items-center justify-center border-dashed border-blue-300">
-                      <span className="text-[11px] font-bold text-blue-700 tracking-wider">GCASH QR CODE</span>
+                       <Image 
+                          src="/images/GCASHQR.png" // Update this path to match your image file name
+                          alt="GCash QR Code"
+                           width={160}  // Explicit width in pixels (matches your container sizing minus padding)
+                           height={160} // Explicit height in pixels
+                          priority
+                          className="object-contain"
+                        />
                     </div>
                   </div>
                 ) : (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-gray-600">
-                      Transfer to BPI: <span className="font-bold text-orange-600">1234-5678-90</span> (Pickle Club)
+                      Transfer to BPI: <span className="font-bold text-orange-600">0599340217</span> (KYEPSU)
                     </p>
                     <div className="w-44 h-44 bg-white p-2 border border-orange-200 rounded-xl mx-auto shadow-sm flex items-center justify-center border-dashed border-orange-300">
-                      <span className="text-[11px] font-bold text-orange-700 tracking-wider">BPI QR CODE</span>
+                      <Image 
+                        src="/images/BPIQR.png" // Update this path to match your image file name
+                        alt="BPI QR Code"
+                        width={160}  // Explicit width in pixels (matches your container sizing minus padding)
+                        height={160} // Explicit height in pixels
+                        priority
+                        className="object-contain"
+                      />
                     </div>
                   </div>
                 )}

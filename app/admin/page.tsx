@@ -91,7 +91,7 @@ function CourtCalendar({
         <FullCalendar
           plugins={[timeGridPlugin, interactionPlugin]}
           initialView="timeGridWeek"
-          slotMinTime="08:00:00"
+          slotMinTime="06:00:00"
           slotMaxTime="24:00:00"
           allDaySlot={false}
           editable={false}
@@ -183,30 +183,40 @@ export default function AdminPage() {
   }, [])
 
   // ── Data fetching ──
-  const refreshAdminDashboard = async () => {
+    const refreshAdminDashboard = async () => {
     const startOfTodayIso = new Date().toISOString().split('T')[0] + 'T00:00:00Z'
 
-    // Active bookings
-    const { data: active } = await supabase
-      .from('bookings').select('*')
-      .in('status', ['pending', 'confirmed', 'reserved'])
-      .gte('end_time', startOfTodayIso)
+    // Cutoff: 1 month before today
+    const cutoffDate = new Date()
+    cutoffDate.setMonth(cutoffDate.getMonth() - 1)
+    const cutoffIso = cutoffDate.toISOString().split('T')[0] + 'T00:00:00Z'
 
-    const records: BookingRecord[] = active || []
+    // Fetch pending/reserved (for verification queue) + confirmed (for calendar),
+    // limited to the last month onward to keep the query light
+    const { data: all } = await supabase
+      .from('bookings').select('*')
+      .in('status', ['pending', 'reserved', 'confirmed'])
+      .gte('start_time', cutoffIso)
+      .order('start_time', { ascending: true })
+
+    const records: BookingRecord[] = all || []
     setRawBookings(records)
+
+    // Calendar only shows confirmed bookings
+    const confirmedRecords = records.filter(r => r.status === 'confirmed')
 
     const mapToEvent = (b: BookingRecord) => ({
       id: b.id,
-      title: `${b.customer_name} (${b.status.toUpperCase()})`,
+      title: b.customer_name,
       start: b.start_time.split('+')[0],
       end: b.end_time.split('+')[0],
-      color: b.status === 'pending' ? '#f59e0b' : b.status === 'reserved' ? '#3b82f6' : '#22c55e',
+      color: '#22c55e',
     })
 
-    setCourt1Events(records.filter(r => r.court === '1').map(mapToEvent))
-    setCourt2Events(records.filter(r => r.court === '2').map(mapToEvent))
+    setCourt1Events(confirmedRecords.filter(r => r.court === '1').map(mapToEvent))
+    setCourt2Events(confirmedRecords.filter(r => r.court === '2').map(mapToEvent))
 
-    // Verification queue
+    // Verification queue — only currently-active items awaiting review
     const queue = records.filter(r => r.status === 'reserved' || r.status === 'pending')
     const groupsMap: Record<string, GroupedVerificationRow> = {}
     queue.forEach((item) => {
@@ -289,9 +299,29 @@ useEffect(() => {
     } catch { window.location.href = '/' }
   }
 
-  const handleBulkUpdateStatus = async (refCode: string, status: 'confirmed' | 'expired') => {
+ const handleBulkUpdateStatus = async (refCode: string, status: 'confirmed' | 'expired') => {
   const { error } = await supabase.from('bookings').update({ status }).eq('reference_code', refCode)
   if (error) { alert('Failed to update status.'); return }
+
+  // Fire the SMS only on approval. Don't block the UI on it.
+  if (status === 'confirmed') {
+    const { data: { session } } = await supabase.auth.getSession()
+    fetch('/api/send-sms', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session?.access_token ?? ''}`,
+      },
+      body: JSON.stringify({ referenceCode: refCode }),
+    })
+      .then((res) => {
+        if (!res.ok) alert(`Booking approved, but the confirmation SMS failed to send. You may want to contact the customer manually (Ref: ${refCode}).`)
+      })
+      .catch(() => {
+        alert(`Booking approved, but the confirmation SMS failed to send. You may want to contact the customer manually (Ref: ${refCode}).`)
+      })
+  }
+
   refreshAdminDashboard()
   fetchHistoryBookings()
 }
