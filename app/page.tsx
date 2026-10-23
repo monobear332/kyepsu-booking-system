@@ -439,6 +439,7 @@ export default function HomePage() {
               size="lg"
               className="font-bold tracking-wide bg-[#4D663B] hover:bg-[#3b502e] text-white px-6 transition-all duration-200 hover:scale-105 active:scale-95 shadow-md shadow-[#4D663B]/20"
               onClick={() => setBookingOpen(true)}
+              disabled
             >
               Book Now
             </Button>
@@ -480,6 +481,7 @@ export default function HomePage() {
             size="lg"
             className="font-bold px-10 py-6 text-base bg-[#4D663B] hover:bg-[#3b502e] text-white shadow-xl shadow-[#4D663B]/25 transition-all hover:scale-105 active:scale-95"
             onClick={() => setBookingOpen(true)}
+            disabled
           >
             Book Court Now
           </Button>
@@ -812,7 +814,7 @@ export default function HomePage() {
                 {selectedMethod === 'gcash' ? (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-gray-600">
-                      Send to GCash: <span className="font-bold text-blue-600">0976-105-8717</span> (Kyle O.)
+                      Send to GCash: <span className="font-bold text-blue-600">KY*E ED****E O.</span>
                     </p>
                     <div className="w-44 h-44 bg-white p-2 border border-blue-200 rounded-xl mx-auto shadow-sm flex items-center justify-center border-dashed border-blue-300">
                        <Image 
@@ -828,7 +830,7 @@ export default function HomePage() {
                 ) : (
                   <div className="space-y-3">
                     <p className="text-sm font-medium text-gray-600">
-                      Transfer to BPI: <span className="font-bold text-orange-600">0599340217</span> (KYEPSU)
+                      Transfer to BPI: <span className="font-bold text-orange-600">**********0217</span> (KYEPSU)
                     </p>
                     <div className="w-44 h-44 bg-white p-2 border border-orange-200 rounded-xl mx-auto shadow-sm flex items-center justify-center border-dashed border-orange-300">
                       <Image 
